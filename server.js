@@ -10,6 +10,7 @@ app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
 const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = 'https://efi-pix-proxy-ec0d.onrender.com/efi-webhook?ignorar=';
 
 const efipay = new EfiPay({
   client_id: process.env.EFI_CLIENT_ID,
@@ -30,6 +31,72 @@ function formatarValor(valor) {
   return numero.toFixed(2);
 }
 
+async function ensureEfiWebhook() {
+  const chave = process.env.EFI_PIX_KEY;
+
+  if (!chave) {
+    console.error('[efi-webhook] EFI_PIX_KEY não configurada');
+    return;
+  }
+
+  try {
+    try {
+      const atual = await efipay.pixDetailWebhook({ chave });
+
+      if (atual?.webhookUrl === WEBHOOK_URL) {
+        console.log('[efi-webhook] já configurado:', WEBHOOK_URL);
+        return;
+      }
+    } catch (_) {}
+
+    const res = await efipay.pixConfigWebhook(
+      { chave },
+      { webhookUrl: WEBHOOK_URL },
+      {
+        headers: {
+          'x-skip-mtls-checking': 'true',
+        },
+      }
+    );
+
+    console.log('[efi-webhook] configurado com sucesso:', res);
+  } catch (err) {
+    console.error('[efi-webhook] erro ao configurar:', err?.response?.data || err);
+  }
+}
+
+async function processarWebhookEfi(req, res) {
+  try {
+    console.log('Webhook Efí recebido:', JSON.stringify(req.body, null, 2));
+
+    const pixList = req.body?.pix || [];
+
+    for (const pix of pixList) {
+      const payload = {
+        txid: pix.txid,
+        endToEndId: pix.endToEndId,
+        valor: pix.valor,
+        horario: pix.horario,
+        status: 'paid',
+      };
+
+      console.log('Pagamento Pix confirmado:', payload);
+
+      // Futuro: aqui você pode avisar a Lovable/checkout:
+      // await fetch('SUA_URL_DA_LOVABLE/api/confirmar-pagamento-efi', {
+      //   method: 'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify(payload),
+      // });
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error('Erro no webhook Efí:', err);
+    return res.sendStatus(500);
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({
     online: true,
@@ -40,6 +107,15 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, timestamp: new Date().toISOString() });
+});
+
+app.post('/admin/setup-webhook', async (req, res) => {
+  await ensureEfiWebhook();
+
+  res.json({
+    ok: true,
+    webhookUrl: WEBHOOK_URL,
+  });
 });
 
 app.post('/create-pix', async (req, res) => {
@@ -102,6 +178,8 @@ app.post('/create-pix', async (req, res) => {
       throw new Error('Efí não retornou loc.id da cobrança');
     }
 
+    ensureEfiWebhook().catch(console.error);
+
     const qr = await efipay.pixGenerateQRCode({ id: cobranca.loc.id });
 
     return res.json({
@@ -139,40 +217,10 @@ app.post('/create-pix', async (req, res) => {
   }
 });
 
-app.post('/efi-webhook', async (req, res) => {
-  try {
-    console.log('Webhook Efí recebido:', JSON.stringify(req.body, null, 2));
-
-    const pixList = req.body?.pix || [];
-
-    for (const pix of pixList) {
-      const txid = pix.txid;
-      const endToEndId = pix.endToEndId;
-      const valor = pix.valor;
-      const horario = pix.horario;
-
-      console.log('Pagamento Pix confirmado:', {
-        txid,
-        endToEndId,
-        valor,
-        horario,
-      });
-
-      // AQUI você deve chamar seu banco/site para:
-      // 1. localizar pedido pelo txid
-      // 2. impedir pedido órfão
-      // 3. impedir duplicidade
-      // 4. marcar pedido como pago
-      // 5. disparar Meta CAPI / UTMify / página de obrigado
-    }
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error('Erro no webhook Efí:', err);
-    return res.sendStatus(500);
-  }
-});
+app.post('/efi-webhook', processarWebhookEfi);
+app.post('/efi-webhook/pix', processarWebhookEfi);
 
 app.listen(PORT, () => {
   console.log(`Servidor Efí Pix rodando na porta ${PORT}`);
+  ensureEfiWebhook().catch(console.error);
 });
