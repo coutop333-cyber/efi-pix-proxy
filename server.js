@@ -3,6 +3,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const EfiPay = require('sdk-node-apis-efi');
 
 const app = express();
@@ -12,17 +14,43 @@ app.use(express.json({ limit: '2mb' }));
 
 const PORT = process.env.PORT || 3000;
 
-const WEBHOOK_URL =
+// Fallbacks antigos para NÃO quebrar a loja antiga
+const DEFAULT_PROXY_WEBHOOK_URL =
   'https://efi-pix-proxy-ec0d.onrender.com/efi-webhook?ignorar=';
 
-const LOVABLE_RELAY_URL =
+const DEFAULT_LOVABLE_RELAY_URL =
   'https://casacosmeticos.shop/api/public/efi-pago';
+
+// Novo proxy pode usar envs próprias
+const PUBLIC_PROXY_URL =
+  process.env.PUBLIC_PROXY_URL ||
+  process.env.RENDER_EXTERNAL_URL ||
+  'https://efi-pix-proxy-1.onrender.com';
+
+const WEBHOOK_URL =
+  process.env.EFI_WEBHOOK_URL ||
+  `${PUBLIC_PROXY_URL}/efi-webhook?ignorar=`;
+
+const LOVABLE_RELAY_URL =
+  process.env.SITE_WEBHOOK_URL ||
+  process.env.LOVABLE_RELAY_URL ||
+  DEFAULT_LOVABLE_RELAY_URL;
+
+function getCertificatePath() {
+  if (process.env.EFI_CERT_BASE64) {
+    const certPath = path.join('/tmp', 'efi-certificate.p12');
+    fs.writeFileSync(certPath, Buffer.from(process.env.EFI_CERT_BASE64, 'base64'));
+    return certPath;
+  }
+
+  return './certificate.p12';
+}
 
 const efipay = new EfiPay({
   client_id: process.env.EFI_CLIENT_ID,
   client_secret: process.env.EFI_CLIENT_SECRET,
   sandbox: false,
-  certificate: './certificate.p12',
+  certificate: getCertificatePath(),
 });
 
 function gerarTxid() {
@@ -55,7 +83,12 @@ async function ensureEfiWebhook() {
         console.log('[efi-webhook] já configurado:', WEBHOOK_URL);
         return;
       }
-    } catch (_) {}
+
+      console.log('[efi-webhook] webhook atual:', atual?.webhookUrl);
+      console.log('[efi-webhook] novo webhook:', WEBHOOK_URL);
+    } catch (err) {
+      console.log('[efi-webhook] nenhum webhook atual encontrado ou erro ao consultar');
+    }
 
     const res = await efipay.pixConfigWebhook(
       { chave },
@@ -68,21 +101,21 @@ async function ensureEfiWebhook() {
     );
 
     console.log('[efi-webhook] configurado com sucesso:', res);
+    return res;
 
   } catch (err) {
     console.error(
       '[efi-webhook] erro ao configurar:',
       err?.response?.data || err
     );
+    throw err;
   }
 }
 
 async function avisarLovablePagamento(payload) {
   try {
     if (!process.env.EFI_RELAY_SECRET) {
-      console.error(
-        '[lovable-relay] EFI_RELAY_SECRET não configurado'
-      );
+      console.error('[lovable-relay] EFI_RELAY_SECRET não configurado');
       return;
     }
 
@@ -101,11 +134,8 @@ async function avisarLovablePagamento(payload) {
 
     const text = await response.text();
 
-    console.log(
-      '[lovable-relay] resposta:',
-      response.status,
-      text
-    );
+    console.log('[lovable-relay] enviado para:', LOVABLE_RELAY_URL);
+    console.log('[lovable-relay] resposta:', response.status, text);
 
   } catch (relayErr) {
     console.error('[lovable-relay] erro:', relayErr);
@@ -114,10 +144,7 @@ async function avisarLovablePagamento(payload) {
 
 async function processarWebhookEfi(req, res) {
   try {
-    console.log(
-      'Webhook Efí recebido:',
-      JSON.stringify(req.body, null, 2)
-    );
+    console.log('Webhook Efí recebido:', JSON.stringify(req.body, null, 2));
 
     const pixList = req.body?.pix || [];
 
@@ -148,6 +175,8 @@ app.get('/', (req, res) => {
     online: true,
     service: 'efi-pix-proxy',
     message: 'Backend Efí Pix online',
+    webhookUrl: WEBHOOK_URL,
+    relayUrl: LOVABLE_RELAY_URL,
   });
 });
 
@@ -159,12 +188,75 @@ app.get('/health', (req, res) => {
 });
 
 app.post('/admin/setup-webhook', async (req, res) => {
-  await ensureEfiWebhook();
+  try {
+    const result = await ensureEfiWebhook();
 
-  res.json({
-    ok: true,
-    webhookUrl: WEBHOOK_URL,
-  });
+    res.json({
+      ok: true,
+      webhookUrl: WEBHOOK_URL,
+      result,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      webhookUrl: WEBHOOK_URL,
+      error: err?.response?.data || err.message || err,
+    });
+  }
+});
+
+app.get('/admin/setup-webhook', async (req, res) => {
+  try {
+    const result = await ensureEfiWebhook();
+
+    res.json({
+      ok: true,
+      webhookUrl: WEBHOOK_URL,
+      result,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      webhookUrl: WEBHOOK_URL,
+      error: err?.response?.data || err.message || err,
+    });
+  }
+});
+
+app.post('/register-webhook', async (req, res) => {
+  try {
+    const result = await ensureEfiWebhook();
+
+    res.json({
+      ok: true,
+      webhookUrl: WEBHOOK_URL,
+      result,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      webhookUrl: WEBHOOK_URL,
+      error: err?.response?.data || err.message || err,
+    });
+  }
+});
+
+app.get('/register-webhook', async (req, res) => {
+  try {
+    const result = await ensureEfiWebhook();
+
+    res.json({
+      ok: true,
+      webhookUrl: WEBHOOK_URL,
+      result,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      webhookUrl: WEBHOOK_URL,
+      error: err?.response?.data || err.message || err,
+    });
+  }
 });
 
 app.post('/create-pix', async (req, res) => {
@@ -205,7 +297,6 @@ app.post('/create-pix', async (req, res) => {
     }
 
     const txid = gerarTxid();
-
     const valorFormatado = formatarValor(valor);
 
     const body = {
@@ -235,21 +326,17 @@ app.post('/create-pix', async (req, res) => {
 
     const params = { txid };
 
-    const cobranca =
-      await efipay.pixCreateCharge(params, body);
+    const cobranca = await efipay.pixCreateCharge(params, body);
 
     if (!cobranca.loc || !cobranca.loc.id) {
-      throw new Error(
-        'Efí não retornou loc.id da cobrança'
-      );
+      throw new Error('Efí não retornou loc.id da cobrança');
     }
 
     ensureEfiWebhook().catch(console.error);
 
-    const qr =
-      await efipay.pixGenerateQRCode({
-        id: cobranca.loc.id,
-      });
+    const qr = await efipay.pixGenerateQRCode({
+      id: cobranca.loc.id,
+    });
 
     return res.json({
       success: true,
@@ -290,21 +377,19 @@ app.post('/create-pix', async (req, res) => {
 
     return res.status(500).json({
       error: true,
-      message:
-        err.message || 'Erro interno ao criar Pix',
+      message: err.message || 'Erro interno ao criar Pix',
       details: err.response?.data || null,
     });
   }
 });
 
 app.post('/efi-webhook', processarWebhookEfi);
-
 app.post('/efi-webhook/pix', processarWebhookEfi);
 
 app.listen(PORT, () => {
-  console.log(
-    `Servidor Efí Pix rodando na porta ${PORT}`
-  );
+  console.log(`Servidor Efí Pix rodando na porta ${PORT}`);
+  console.log('[config] WEBHOOK_URL:', WEBHOOK_URL);
+  console.log('[config] LOVABLE_RELAY_URL:', LOVABLE_RELAY_URL);
 
   ensureEfiWebhook().catch(console.error);
 });
