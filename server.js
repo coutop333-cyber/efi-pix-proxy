@@ -32,6 +32,9 @@ const LOVABLE_RELAY_URL =
   process.env.LOVABLE_RELAY_URL ||
   DEFAULT_LOVABLE_RELAY_URL;
 
+// Map em memória para manter mapeamento txid → pedidoId
+const pedidoMap = new Map();
+
 function getCertificatePath() {
   if (process.env.EFI_CERT_BASE64) {
     const certPath = path.join('/tmp', 'efi-certificate.p12');
@@ -145,6 +148,12 @@ async function avisarLovablePagamento(payload) {
       secret: process.env.EFI_RELAY_SECRET,
     };
 
+    // Adicionar pedidoId e external_reference se disponível
+    if (payload.pedidoId) {
+      body.pedidoId = payload.pedidoId;
+      body.external_reference = payload.pedidoId;
+    }
+
     console.log(
       '[lovable-relay] enviando para:',
       LOVABLE_RELAY_URL
@@ -200,12 +209,33 @@ async function processarWebhookEfi(req, res) {
     }
 
     for (const pix of pixList) {
+      console.log(
+        '[efi-webhook] txid recebido no webhook:',
+        pix.txid
+      );
+
+      // Buscar dados do pedido no Map
+      const dadosPedido = pedidoMap.get(pix.txid);
+
+      if (dadosPedido) {
+        console.log(
+          '[efi-webhook] pedidoId encontrado:',
+          dadosPedido.pedidoId
+        );
+      } else {
+        console.warn(
+          '[efi-webhook] [relay] pedidoId não encontrado para txid:',
+          pix.txid
+        );
+      }
+
       const payload = {
         txid: pix.txid,
         endToEndId: pix.endToEndId,
         valor: pix.valor,
         horario: pix.horario,
         status: 'paid',
+        pedidoId: dadosPedido?.pedidoId,
       };
 
       console.log(
@@ -347,6 +377,11 @@ app.post('/create-pix', async (req, res) => {
 
     const txid = gerarTxid();
 
+    console.log(
+      '[create-pix] txid gerado para enviar à EFI:',
+      txid
+    );
+
     const valorFormatado =
       formatarValor(valor);
 
@@ -384,6 +419,44 @@ app.post('/create-pix', async (req, res) => {
         body
       );
 
+    // Usar o txid retornado pela EFI ou o gerado
+    const txidFinal = cobranca.txid || txid;
+
+    console.log(
+      '[create-pix] txid retornado pela EFI:',
+      txidFinal
+    );
+
+    // Salvar mapeamento por txid
+    pedidoMap.set(txidFinal, {
+      pedidoId,
+      produto: produto || 'Produto',
+      email,
+      nome,
+      telefone,
+    });
+
+    console.log(
+      '[create-pix] pedidoId salvo no Map para txid:',
+      txidFinal
+    );
+
+    // Também salvar por locId se existir
+    if (cobranca.loc && cobranca.loc.id) {
+      pedidoMap.set(String(cobranca.loc.id), {
+        pedidoId,
+        produto: produto || 'Produto',
+        email,
+        nome,
+        telefone,
+      });
+
+      console.log(
+        '[create-pix] pedidoId salvo no Map para locId:',
+        cobranca.loc.id
+      );
+    }
+
     ensureEfiWebhook().catch(
       console.error
     );
@@ -400,8 +473,7 @@ app.post('/create-pix', async (req, res) => {
 
       pedidoId,
 
-      txid:
-        cobranca.txid || txid,
+      txid: txidFinal,
 
       locId:
         cobranca.loc.id,
