@@ -36,6 +36,7 @@ const LOVABLE_RELAY_URL =
 const pedidoMap = new Map();
 
 function getCertificatePath() {
+  // Caso use base64
   if (process.env.EFI_CERT_BASE64) {
     const certPath = path.join('/tmp', 'efi-certificate.p12');
 
@@ -47,7 +48,8 @@ function getCertificatePath() {
     return certPath;
   }
 
-  return './certificate.p12';
+  // Secret File do Render
+  return '/etc/secrets/certificate.p12';
 }
 
 const efipay = new EfiPay({
@@ -419,7 +421,6 @@ app.post('/create-pix', async (req, res) => {
         body
       );
 
-    // Usar o txid retornado pela EFI ou o gerado
     const txidFinal = cobranca.txid || txid;
 
     console.log(
@@ -427,7 +428,6 @@ app.post('/create-pix', async (req, res) => {
       txidFinal
     );
 
-    // Salvar mapeamento por txid
     pedidoMap.set(txidFinal, {
       pedidoId,
       produto: produto || 'Produto',
@@ -441,7 +441,6 @@ app.post('/create-pix', async (req, res) => {
       txidFinal
     );
 
-    // Também salvar por locId se existir
     if (cobranca.loc && cobranca.loc.id) {
       pedidoMap.set(String(cobranca.loc.id), {
         pedidoId,
